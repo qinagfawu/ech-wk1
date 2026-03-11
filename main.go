@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/你的用户名/ech-wk-ksu/core" // 替换为你的实际模块路径
+	"github.com/byJoey/ech-wk-ksu/core" // 替换为你的实际模块路径
 )
 
 func main() {
