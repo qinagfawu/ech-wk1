@@ -16,7 +16,7 @@ jobs:
   build-and-release:
     runs-on: ubuntu-latest
     permissions:
-      contents: write  # 授予Release权限
+      contents: write
 
     steps:
       - name: Checkout repo
@@ -28,9 +28,8 @@ jobs:
           go-version: '1.22'
           cache: true
 
-      - name: Install arm64 compile dependencies (仅装arm64依赖)
-        run: |
-          sudo apt update && sudo apt install -y gcc-aarch64-linux-gnu
+      - name: Install arm64 dependencies
+        run: sudo apt update && sudo apt install -y gcc-aarch64-linux-gnu
 
       - name: Clone ech-wk source
         run: |
@@ -39,26 +38,94 @@ jobs:
           go mod init ech-workers
           go mod tidy
 
-      # 仅保留arm64编译（删除x86_64步骤）
+      # 核心修复：先清空旧模块目录，重新构建
+      - name: Clean & rebuild module directory
+        run: |
+          # 清空旧目录，避免残留文件干扰
+          rm -rf $GITHUB_WORKSPACE/module
+          mkdir -p $GITHUB_WORKSPACE/module/bin
+          mkdir -p $GITHUB_WORKSPACE/module/config
+          mkdir -p $GITHUB_WORKSPACE/module/webroot
+          # 确保module.prop存在（KSU必须）
+          echo "id=ech-wk" > $GITHUB_WORKSPACE/module/module.prop
+          echo "name=ECH-Workers Proxy" >> $GITHUB_WORKSPACE/module/module.prop
+          echo "version=${{ github.event.inputs.module_version }}" >> $GITHUB_WORKSPACE/module/module.prop
+          echo "versionCode=$(date +%Y%m%d)" >> $GITHUB_WORKSPACE/module/module.prop
+          echo "author=byJoey" >> $GITHUB_WORKSPACE/module/module.prop
+          echo "description=ECH-Workers Proxy for KernelSU" >> $GITHUB_WORKSPACE/module/module.prop
+
+      # 编译二进制并放到正确路径
       - name: Build ech-wk arm64
         run: |
           cd /tmp/ech-wk
           export GOOS=android
           export GOARCH=arm64
           export CGO_ENABLED=0
-          mkdir -p $GITHUB_WORKSPACE/module/bin
-          # 输出带arm64后缀的二进制，匹配customize.sh
+          # 直接编译到模块bin目录
           go build -ldflags="-s -w" -o $GITHUB_WORKSPACE/module/bin/ech-wk-arm64 ./ech-workers.go
+          # 验证文件存在且有执行权限
+          ls -l $GITHUB_WORKSPACE/module/bin/
           chmod +x $GITHUB_WORKSPACE/module/bin/ech-wk-arm64
-          ls -l $GITHUB_WORKSPACE/module/bin/  # 验证文件存在
+          file $GITHUB_WORKSPACE/module/bin/ech-wk-arm64
 
-      - name: Package KSU module
+      # 复制自定义脚本到模块目录
+      - name: Copy customize.sh
         run: |
+          # 确保customize.sh在模块根目录
+          cp $GITHUB_WORKSPACE/customize.sh $GITHUB_WORKSPACE/module/ 2>/dev/null || {
+              # 如果仓库中没有，直接创建修复版的customize.sh
+              cat > $GITHUB_WORKSPACE/module/customize.sh << 'EOF'
+#!/system/bin/sh
+MODDIR=$(dirname "$0")
+RUN_DIR="/data/adb/ech-wk"
+mkdir -p "$RUN_DIR"
+LOG_FILE="$RUN_DIR/install.log"
+touch "$LOG_FILE"
+
+log() {
+    local msg="[$(date '+%Y-%m-%d %H:%M:%S')] $1"
+    echo "$msg" >> "$LOG_FILE"
+    [ "$(type -t ui_print)" = "function" ] && ui_print "$1" || echo "$1"
+}
+
+log "=== 开始安装 ECH-Workers 模块 ==="
+log "模块目录: $MODDIR"
+ARCH=$(uname -m)
+log "架构: $ARCH"
+BIN_NAME="ech-wk-arm64"
+BIN_SRC="$MODDIR/bin/$BIN_NAME"
+log "检查二进制: $BIN_SRC"
+
+if [ ! -f "$BIN_SRC" ]; then
+    log "错误：二进制缺失！目录文件: $(ls -l $MODDIR/)"
+    exit 1
+fi
+
+cp -f "$BIN_SRC" "$RUN_DIR/ech-wk" && chmod 755 "$RUN_DIR/ech-wk"
+echo "server_addr = ech.510524.xyz:443" > "$RUN_DIR/config.conf"
+touch "$MODDIR/auto_mount"
+log "=== 安装完成 ==="
+ui_print "✅ 安装成功！"
+exit 0
+EOF
+          }
+          # 给脚本加执行权限
+          chmod +x $GITHUB_WORKSPACE/module/customize.sh
+
+      # 核心修复：进入模块目录打包，确保所有文件被包含
+      - name: Package KSU module (关键！)
+        run: |
+          # 必须进入module目录后打包，否则路径会错乱
           cd $GITHUB_WORKSPACE/module
           MODULE_VERSION=${{ github.event.inputs.module_version }}
           BUILD_DATE=$(date +%Y%m%d)
           ZIP_NAME="ech-wk-ksu-v${MODULE_VERSION}-${BUILD_DATE}-arm64.zip"
-          zip -r ../$ZIP_NAME ./* -x "*.git*" "*.md" "*.yml"
+          # 打包当前目录下的所有文件（包括bin/、customize.sh、module.prop）
+          zip -r $ZIP_NAME ./*
+          # 移动ZIP包到根目录
+          mv $ZIP_NAME $GITHUB_WORKSPACE/
+          # 验证ZIP包内容（关键！）
+          unzip -l $GITHUB_WORKSPACE/$ZIP_NAME | grep -E "bin/ech-wk-arm64|customize.sh|module.prop"
           echo "ZIP_NAME=$ZIP_NAME" >> $GITHUB_ENV
 
       - name: Create GitHub Release
@@ -66,12 +133,6 @@ jobs:
         with:
           tag_name: v${{ github.event.inputs.module_version }}
           name: ECH-Workers KSU Module v${{ github.event.inputs.module_version }}
-          body: |
-            ## 版本说明
-            ${{ github.event.inputs.release_note }}
-            ## 构建信息
-            - 支持架构：arm64（仅安卓arm64）
-            - 二进制文件名：ech-wk-arm64
           files: ${{ github.workspace }}/${{ env.ZIP_NAME }}
           draft: false
           prerelease: false
