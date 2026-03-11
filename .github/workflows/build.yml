@@ -13,25 +13,10 @@ on:
         default: '自动构建的 ECH-Workers KSU 模块'
 
 jobs:
-  build:
+  build-and-release:
     runs-on: ubuntu-latest
     permissions:
-      contents: read
-    strategy:
-      fail-fast: false
-      max-parallel: 2
-      max-parallel: 2
-      matrix:
-        arch: [arm64, amd64]
-        include:
-          - arch: arm64
-            goarch: arm64
-            suffix: arm64
-            goos: android
-          - arch: amd64
-            goarch: amd64
-            suffix: x86_64
-            goos: android
+      contents: write  # 显式权限
 
     steps:
       - name: Checkout repo
@@ -43,65 +28,36 @@ jobs:
           go-version: '1.22'
           cache: true
 
-      - name: Install cross-compile dependencies (修复amd64编译)
+      - name: Install arm64 compile dependencies
         run: |
-          sudo apt update && sudo apt install -y \
-          gcc-aarch64-linux-gnu \
-          gcc-x86-64-linux-gnu \
-          android-sdk-build-tools
+          sudo apt update && sudo apt install -y gcc-aarch64-linux-gnu
 
-      - name: Clone ech-wk source (解决模块依赖+缓存)
+      - name: Clone ech-wk source
         run: |
           git clone https://github.com/byJoey/ech-wk.git /tmp/ech-wk
           cd /tmp/ech-wk
           go mod init ech-workers
           go mod tidy
-          go mod download  # 修复缓存警告
+          go mod download
 
-      - name: Build ech-wk binary (适配amd64)
+      - name: Build ech-wk for Android arm64
         run: |
           cd /tmp/ech-wk
-          # amd64用linux系统，arm64用android，提升兼容性
-          export GOOS=${{ matrix.arch == 'amd64' && 'linux' || matrix.goos }}
-          export GOARCH=${{ matrix.goarch }}
+          export GOOS=android
+          export GOARCH=arm64
           export CGO_ENABLED=0
-          mkdir -p $GITHUB_WORKSPACE/module_${{ matrix.suffix }}/bin
-          go build -ldflags="-s -w" -o $GITHUB_WORKSPACE/module_${{ matrix.suffix }}/bin/ech-wk ./ech-workers.go
-          # 验证二进制生成
-          if [ ! -f "$GITHUB_WORKSPACE/module_${{ matrix.suffix }}/bin/ech-wk" ]; then
-            echo "Error: 二进制文件未生成！"
-            exit 1
-          fi
-          file $GITHUB_WORKSPACE/module_${{ matrix.suffix }}/bin/ech-wk
+          mkdir -p $GITHUB_WORKSPACE/module/bin
+          go build -ldflags="-s -w" -o $GITHUB_WORKSPACE/module/bin/ech-wk ./ech-workers.go
+          file $GITHUB_WORKSPACE/module/bin/ech-wk
 
       - name: Package KSU module
         run: |
+          cd $GITHUB_WORKSPACE/module
           MODULE_VERSION=${{ github.event.inputs.module_version }}
           BUILD_DATE=$(date +%Y%m%d)
-          ZIP_NAME="ech-wk-ksu-v${MODULE_VERSION}-${BUILD_DATE}-${{ matrix.suffix }}.zip"
-          cd $GITHUB_WORKSPACE/module_${{ matrix.suffix }}
-          cp -r $GITHUB_WORKSPACE/module/* . 2>/dev/null || true
+          ZIP_NAME="ech-wk-ksu-v${MODULE_VERSION}-${BUILD_DATE}-arm64.zip"
           zip -r ../$ZIP_NAME ./* -x "*.git*" "*.md" "*.yml"
           echo "ZIP_NAME=$ZIP_NAME" >> $GITHUB_ENV
-          echo "ZIP_PATH=$GITHUB_WORKSPACE/$ZIP_NAME" >> $GITHUB_ENV
-
-      - name: Upload build artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: ksu-module-${{ matrix.suffix }}
-          path: ${{ env.ZIP_PATH }}
-
-  release:
-    needs: build
-    if: always()  # 即使编译部分失败，仍创建Release
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - name: Download all artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: $GITHUB_WORKSPACE/artifacts
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -112,13 +68,9 @@ jobs:
             ## 版本说明
             ${{ github.event.inputs.release_note }}
             ## 构建信息
-            - 成功架构：${{ contains(join(matrix.arch), 'arm64') && 'arm64' || '' }} ${{ contains(join(matrix.arch), 'amd64') && 'amd64' || '' }}
+            - 架构：arm64
             - 构建时间：${{ github.run_at }}
-            - 构建编号：${{ github.run_id }}
-          # 上传所有成功的包（自动忽略失败的）
-          files: |
-            $GITHUB_WORKSPACE/artifacts/ksu-module-arm64/*.zip
-            $GITHUB_WORKSPACE/artifacts/ksu-module-amd64/*.zip
+          files: ${{ github.workspace }}/${{ env.ZIP_NAME }}
           draft: false
           prerelease: false
         env:
