@@ -1,4 +1,4 @@
-name: Build & Release ECH-Workers KSU Module (With WebUI)
+name: Build & Release ECH-Workers KSU Module
 
 on:
   workflow_dispatch:
@@ -10,7 +10,7 @@ on:
       release_note:
         description: '版本说明'
         required: false
-        default: '带WebUI的ECH-Workers KSU模块（兼容可编译版本）'
+        default: '自动构建的 ECH-Workers KSU 模块'
 
 jobs:
   build-and-release:
@@ -39,106 +39,46 @@ jobs:
           go mod init ech-workers
           go mod tidy
 
-      # 仅修改编译参数：启用CGO+WebUI适配（核心兼容修改）
-      - name: Build ech-wk arm64 (带WebUI)
+      # 仅保留arm64编译（删除x86_64步骤）
+      - name: Build ech-wk arm64
         run: |
           cd /tmp/ech-wk
           export GOOS=android
           export GOARCH=arm64
-          export CGO_ENABLED=1  # 仅改这里：从0改为1，支持WebUI API
-          export CC=aarch64-linux-gnu-gcc  # 新增：指定arm64编译器
+          export CGO_ENABLED=0
           mkdir -p $GITHUB_WORKSPACE/module/bin
-          # 编译：保留你的参数，仅新增WebUI适配标识
-          go build -ldflags="-s -w -X main.webui_enable=true" -o $GITHUB_WORKSPACE/module/bin/ech-wk-arm64 ./ech-workers.go
+          # 输出带arm64后缀的二进制，匹配customize.sh
+          go build -ldflags="-s -w" -o $GITHUB_WORKSPACE/module/bin/ech-wk-arm64 ./ech-workers.go
           chmod +x $GITHUB_WORKSPACE/module/bin/ech-wk-arm64
           ls -l $GITHUB_WORKSPACE/module/bin/  # 验证文件存在
 
-      # 新增：补充WebUI所需文件（不影响原有打包逻辑）
-      - name: Prepare WebUI files
-        run: |
-          # 创建WebUI目录+默认配置（启用UI）
-          mkdir -p $GITHUB_WORKSPACE/module/config
-          mkdir -p $GITHUB_WORKSPACE/module/webroot
-          # 复制源码中的WebUI静态文件（无则创建空目录）
-          cp -r /tmp/ech-wk/webroot/* $GITHUB_WORKSPACE/module/webroot/ 2>/dev/null || echo "WebUI目录已创建"
-          # 创建启用WebUI的默认配置
-          cat > $GITHUB_WORKSPACE/module/config/default.conf << EOF
-server_addr = ech.510524.xyz:443
-ech_domain = cloudflare-ech.com
-split_mode = bypass_cn
-webui_enable = true
-webui_port = 8080
-EOF
-          # 创建module.prop（声明WebUI入口）
-          cat > $GITHUB_WORKSPACE/module/module.prop << EOF
-id=ech-wk
-name=ECH-Workers Proxy (WebUI)
-version=${{ github.event.inputs.module_version }}
-versionCode=$(date +%Y%m%d)
-author=byJoey
-description=ECH-Workers Proxy for KernelSU (带WebUI)
-webui_url = http://127.0.0.1:8080
-EOF
-          # 创建适配WebUI的customize.sh（绝对路径+UI权限）
-          cat > $GITHUB_WORKSPACE/module/customize.sh << 'EOF'
-#!/system/bin/sh
-MODDIR="/data/adb/modules_update/ech-wk"
-RUN_DIR="/data/adb/ech-wk"
-mkdir -p "$RUN_DIR"
-mkdir -p "$RUN_DIR/webroot"
-
-# 复制二进制（绝对路径）
-BIN_SRC="$MODDIR/bin/ech-wk-arm64"
-cp -f "$BIN_SRC" "$RUN_DIR/ech-wk"
-chmod 777 "$RUN_DIR/ech-wk"
-
-# 复制WebUI配置和静态文件
-cp -f "$MODDIR/config/default.conf" "$RUN_DIR/config.conf" 2>/dev/null
-cp -r "$MODDIR/webroot/"* "$RUN_DIR/webroot/" 2>/dev/null
-
-# 自启动脚本（启动WebUI）
-mkdir -p "/data/adb/post-fs-data.d"
-cat > "/data/adb/post-fs-data.d/ech-wk.sh" << 'SELFSTART'
-#!/system/bin/sh
-sleep 10
-RUN_DIR="/data/adb/ech-wk"
-killall ech-wk 2>/dev/null
-"$RUN_DIR/ech-wk" -config "$RUN_DIR/config.conf" &
-SELFSTART
-chmod +x "/data/adb/post-fs-data.d/ech-wk.sh"
-
-touch "$MODDIR/auto_mount"
-ui_print "✅ 安装成功！WebUI地址：http://127.0.0.1:8080"
-exit 0
-EOF
-          chmod +x $GITHUB_WORKSPACE/module/customize.sh
-
-      # 保留你能编译的打包逻辑（仅改ZIP名称标识WebUI）
+      # 核心修改：打包层级修复（仅改这一步！）
       - name: Package KSU module (修复打包层级)
         run: |
+          # 进入module目录，打包当前目录下的所有文件（无多余层级）
           cd $GITHUB_WORKSPACE/module
           MODULE_VERSION=${{ github.event.inputs.module_version }}
           BUILD_DATE=$(date +%Y%m%d)
-          ZIP_NAME="ech-wk-ksu-v${MODULE_VERSION}-${BUILD_DATE}-arm64-webui.zip"  # 仅改名称
+          ZIP_NAME="ech-wk-ksu-v${MODULE_VERSION}-${BUILD_DATE}-arm64.zip"
+          # 关键：打包./（当前目录），而非./*，确保层级正确
           zip -r $ZIP_NAME ./
+          # 移动ZIP包到根目录
           mv $ZIP_NAME $GITHUB_WORKSPACE/
+          # 验证打包内容（可选）
           unzip -l $GITHUB_WORKSPACE/$ZIP_NAME | grep "bin/ech-wk-arm64"
           echo "ZIP_NAME=$ZIP_NAME" >> $GITHUB_ENV
 
-      # 保留你能编译的发布逻辑（补充WebUI说明）
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ github.event.inputs.module_version }}
-          name: ECH-Workers KSU Module v${{ github.event.inputs.module_version }} (WebUI)
+          name: ECH-Workers KSU Module v${{ github.event.inputs.module_version }}
           body: |
             ## 版本说明
             ${{ github.event.inputs.release_note }}
             ## 构建信息
             - 支持架构：arm64（仅安卓arm64）
             - 二进制文件名：ech-wk-arm64
-            - 内置WebUI，访问地址：http://127.0.0.1:8080
-            - 需KSU测试版（v0.9.5+）以支持WebUI API
           files: ${{ github.workspace }}/${{ env.ZIP_NAME }}
           draft: false
           prerelease: false
