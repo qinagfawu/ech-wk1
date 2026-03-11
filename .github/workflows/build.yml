@@ -46,6 +46,11 @@ jobs:
 
       - name: Build ECH-Workers binary
         run: |
+          # ========== 新增：自动初始化 Go 模块 ==========
+          go mod init github.com/qinagfawu/ech-wk
+          go mod edit -replace github.com/qinagfawu/ech-wk/core=./core
+          # =============================================
+          
           # 编译 Go 程序（无CGO，纯静态编译）
           CGO_ENABLED=0 GOOS=linux GOARCH=${{ matrix.goarch }} \
           go build -trimpath -ldflags "-s -w -extldflags '-static'" \
@@ -72,6 +77,7 @@ jobs:
           cp uninstall.sh module/
           cp config/default.conf module/config/
           cp webroot/index.html module/webroot/
+          cp webroot/app.js module/webroot/
           cp webroot/app.js module/webroot/
           
           # 设置权限 + 转换换行符
