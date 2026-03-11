@@ -1,21 +1,23 @@
-name: Build ECH-Workers for KernelSU
+name: Build & Release ECH-Workers KSU Module
 
 on:
-  push:
-    branches: [ main ]
-    paths:
-      - '**.go'
-      - '**.yml'
-      - 'module/**'
-      - '!README.md'
-  pull_request:
-    branches: [ main ]
-  workflow_dispatch: # 手动触发
+  workflow_dispatch:
+    inputs:
+      module_version:
+        description: '模块版本号（如 1.0.0）'
+        required: true
+        default: '1.0.0'
+      release_note:
+        description: '版本说明'
+        required: false
+        default: '自动构建的 ECH-Workers KSU 模块'
 
 jobs:
+  # 第一步：编译多架构二进制（arm64+amd64）
   build:
-    name: Build & Package (${{ matrix.arch }})
     runs-on: ubuntu-latest
+    permissions:
+      contents: read  # 编译阶段仅需读取权限
     strategy:
       fail-fast: false
       matrix:
@@ -24,78 +26,87 @@ jobs:
           - arch: arm64
             goarch: arm64
             suffix: arm64
-            target: aarch64-linux-android
+            goos: android
+          - arch: amd64
           - arch: amd64
             goarch: amd64
             suffix: x86_64
-            target: x86_64-linux-android
+            goos: android
 
     steps:
-      - name: Checkout code
+      - name: Checkout repo
         uses: actions/checkout@v4
 
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.23'
+          go-version: '1.22'
           cache: true
 
-      - name: Install Android NDK (optional,适配安卓编译)
+      - name: Clone ech-wk source (解决模块依赖)
         run: |
-          sudo apt update && sudo apt install -y gcc-aarch64-linux-gnu gcc-x86-64-linux-gnu
+          git clone https://github.com/byJoey/ech-wk.git /tmp/ech-wk
+          cd /tmp/ech-wk
+          go mod init ech-workers
+          go mod tidy
 
-      - name: Build ECH-Workers binary
+      - name: Build ech-wk binary
         run: |
-          # 直接编译，跳过所有模块配置（避免go.mod冲突）
-          CGO_ENABLED=0 GOOS=linux GOARCH=${{ matrix.goarch }} \
-          go build -trimpath -ldflags "-s -w -extldflags '-static'" \
-          -o ech-wk-${{ matrix.suffix }} ./main.go
-          
-          # 验证二进制文件是否生成成功
-          file ech-wk-${{ matrix.suffix }}
-          chmod +x ech-wk-${{ matrix.suffix }}
-
-      - name: Prepare KSU module files
-        run: |
-          # 确保module目录下的子目录存在
-          mkdir -p module/bin
-          mkdir -p module/config
-          mkdir -p module/webroot
-          
-          # 仅复制编译好的二进制到module/bin（核心操作）
-          cp ech-wk-${{ matrix.suffix }} module/bin/ech-wk
-          
-          # 设置权限（修复脚本执行权限）
-          chmod +x module/*.sh || true  # 忽略无sh文件的错误
-          chmod +x module/bin/ech-wk
-          
-          # 转换换行符（修复Windows格式问题）
-          sed -i 's/\r$//' module/*.sh 2>/dev/null || true
-          sed -i 's/\r$//' module/module.prop 2>/dev/null || true
-          sed -i 's/\r$//' module/config/default.conf 2>/dev/null || true
+          cd /tmp/ech-wk
+          export GOOS=${{ matrix.goos }}
+          export GOARCH=${{ matrix.goarch }}
+          export CGO_ENABLED=0
+          mkdir -p $GITHUB_WORKSPACE/module_${{ matrix.suffix }}/bin
+          go build -ldflags="-s -w" -o $GITHUB_WORKSPACE/module_${{ matrix.suffix }}/bin/ech-wk ./ech-workers.go
+          file $GITHUB_WORKSPACE/module_${{ matrix.suffix }}/bin/ech-wk
 
       - name: Package KSU module
         run: |
-          # 进入module目录打包，避免路径错误
-          cd module
-          zip -r ../ech-wk-ksu-${{ matrix.suffix }}.zip ./* -x "*.DS_Store" "*.git*"
-          cd ..
-          # 验证ZIP包内容
-          unzip -l ech-wk-ksu-${{ matrix.suffix }}.zip
+          MODULE_VERSION=${{ github.event.inputs.module_version }}
+          BUILD_DATE=$(date +%Y%m%d)
+          ZIP_NAME="ech-wk-ksu-v${MODULE_VERSION}-${BUILD_DATE}-${{ matrix.suffix }}.zip"
+          cd $GITHUB_WORKSPACE/module_${{ matrix.suffix }}
+          # 复制模块配置文件（根据你的仓库结构调整）
+          cp -r $GITHUB_WORKSPACE/module/* . 2>/dev/null || true
+          zip -r ../$ZIP_NAME ./* -x "*.git*" "*.md" "*.yml"
+          # 上传产物供Release阶段使用
+          echo "ZIP_NAME=$ZIP_NAME" >> $GITHUB_ENV
+          echo "ZIP_PATH=$GITHUB_WORKSPACE/$ZIP_NAME" >> $GITHUB_ENV
 
-      - name: Upload artifact
+      - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ech-wk-ksu-${{ matrix.suffix }}
-          path: ech-wk-ksu-${{ matrix.suffix }}.zip
+          name: ksu-module-${{ matrix.suffix }}
+          path: ${{ env.ZIP_PATH }}
 
-      - name: Create Release
-        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+  # 第二步：统一创建Release（仅执行1次，上传所有架构包）
+  release:
+    needs: build  # 依赖编译完成
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write  # 显式授予Release权限
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: $GITHUB_WORKSPACE/artifacts
+
+      - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: ech-wk-ksu-${{ matrix.suffix }}.zip
-          tag_name: v1.3-${{ matrix.suffix }}
-          generate_release_notes: true
+          tag_name: v${{ github.event.inputs.module_version }}
+          name: ECH-Workers KSU Module v${{ github.event.inputs.module_version }}
+          body: |
+            ## 版本说明
+            ${{ github.event.inputs.release_note }}
+            ## 构建信息
+            - 架构：arm64 + amd64
+            - 构建时间：${{ github.run_at }}
+            - 构建编号：${{ github.run_id }}
+          # 上传所有架构的包
+          files: |
+            $GITHUB_WORKSPACE/artifacts/ksu-module-arm64/*.zip
+            $GITHUB_WORKSPACE/artifacts/ksu-module-amd64/*.zip
           draft: false
           prerelease: false
         env:
