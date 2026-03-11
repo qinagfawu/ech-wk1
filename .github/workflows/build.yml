@@ -1,0 +1,107 @@
+name: Build ECH-Workers for KernelSU
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - '**.go'
+      - '**.yml'
+      - 'module/**'
+      - '!README.md'
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch: # 手动触发
+
+jobs:
+  build:
+    name: Build & Package (${{ matrix.arch }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [arm64, amd64]
+        include:
+          - arch: arm64
+            goarch: arm64
+            suffix: arm64
+            target: aarch64-linux-android
+          - arch: amd64
+            goarch: amd64
+            suffix: x86_64
+            target: x86_64-linux-android
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache: true
+
+      - name: Install Android NDK (optional,适配安卓编译)
+        run: |
+          sudo apt update && sudo apt install -y gcc-aarch64-linux-gnu gcc-x86-64-linux-gnu
+
+      - name: Build ECH-Workers binary
+        run: |
+          # 编译 Go 程序（无CGO，纯静态编译）
+          CGO_ENABLED=0 GOOS=linux GOARCH=${{ matrix.goarch }} \
+          go build -trimpath -ldflags "-s -w -extldflags '-static'" \
+          -o ech-wk-${{ matrix.suffix }} ./main.go
+          
+          # 验证二进制
+          file ech-wk-${{ matrix.suffix }}
+          chmod +x ech-wk-${{ matrix.suffix }}
+
+      - name: Prepare KSU module files
+        run: |
+          # 创建模块目录
+          mkdir -p module/bin
+          mkdir -p module/config
+          mkdir -p module/webroot
+          
+          # 复制二进制
+          cp ech-wk-${{ matrix.suffix }} module/bin/ech-wk
+          
+          # 复制模块配置文件
+          cp module.prop module/
+          cp customize.sh module/
+          cp service.sh module/
+          cp uninstall.sh module/
+          cp config/default.conf module/config/
+          cp webroot/index.html module/webroot/
+          cp webroot/app.js module/webroot/
+          
+          # 设置权限 + 转换换行符
+          chmod +x module/*.sh
+          chmod +x module/bin/ech-wk
+          sed -i 's/\r$//' module/*.sh
+          sed -i 's/\r$//' module/module.prop
+          sed -i 's/\r$//' module/config/default.conf
+
+      - name: Package KSU module
+        run: |
+          cd module
+          zip -r ../ech-wk-ksu-${{ matrix.suffix }}.zip ./* -x "*.DS_Store"
+          cd ..
+          unzip -l ech-wk-ksu-${{ matrix.suffix }}.zip
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ech-wk-ksu-${{ matrix.suffix }}
+          path: ech-wk-ksu-${{ matrix.suffix }}.zip
+
+      - name: Create Release
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ech-wk-ksu-${{ matrix.suffix }}.zip
+          tag_name: v1.3-${{ matrix.suffix }}
+          generate_release_notes: true
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
