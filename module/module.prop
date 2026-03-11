@@ -1,0 +1,8 @@
+id=ech-wk
+name=ECH-Workers Proxy
+version=v1.3
+versionCode=13
+author=byJoey (适配KernelSU)
+description=ECH Workers 代理客户端，支持ECH加密、智能分流、全局代理
+updateJson=https://github.com/你的用户名/ech-wk-ksu/releases/latest/download/update.json
+webuiIcon=webroot/icon.png
