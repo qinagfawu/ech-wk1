@@ -13,13 +13,14 @@ on:
         default: '自动构建的 ECH-Workers KSU 模块'
 
 jobs:
-  # 第一步：编译多架构二进制（arm64+amd64）
   build:
     runs-on: ubuntu-latest
     permissions:
-      contents: read  # 编译阶段仅需读取权限
+      contents: read
     strategy:
       fail-fast: false
+      max-parallel: 2
+      max-parallel: 2
       matrix:
         arch: [arm64, amd64]
         include:
@@ -27,7 +28,6 @@ jobs:
             goarch: arm64
             suffix: arm64
             goos: android
-          - arch: amd64
           - arch: amd64
             goarch: amd64
             suffix: x86_64
@@ -43,21 +43,35 @@ jobs:
           go-version: '1.22'
           cache: true
 
-      - name: Clone ech-wk source (解决模块依赖)
+      - name: Install cross-compile dependencies (修复amd64编译)
+        run: |
+          sudo apt update && sudo apt install -y \
+          gcc-aarch64-linux-gnu \
+          gcc-x86-64-linux-gnu \
+          android-sdk-build-tools
+
+      - name: Clone ech-wk source (解决模块依赖+缓存)
         run: |
           git clone https://github.com/byJoey/ech-wk.git /tmp/ech-wk
           cd /tmp/ech-wk
           go mod init ech-workers
           go mod tidy
+          go mod download  # 修复缓存警告
 
-      - name: Build ech-wk binary
+      - name: Build ech-wk binary (适配amd64)
         run: |
           cd /tmp/ech-wk
-          export GOOS=${{ matrix.goos }}
+          # amd64用linux系统，arm64用android，提升兼容性
+          export GOOS=${{ matrix.arch == 'amd64' && 'linux' || matrix.goos }}
           export GOARCH=${{ matrix.goarch }}
           export CGO_ENABLED=0
           mkdir -p $GITHUB_WORKSPACE/module_${{ matrix.suffix }}/bin
           go build -ldflags="-s -w" -o $GITHUB_WORKSPACE/module_${{ matrix.suffix }}/bin/ech-wk ./ech-workers.go
+          # 验证二进制生成
+          if [ ! -f "$GITHUB_WORKSPACE/module_${{ matrix.suffix }}/bin/ech-wk" ]; then
+            echo "Error: 二进制文件未生成！"
+            exit 1
+          fi
           file $GITHUB_WORKSPACE/module_${{ matrix.suffix }}/bin/ech-wk
 
       - name: Package KSU module
@@ -66,10 +80,8 @@ jobs:
           BUILD_DATE=$(date +%Y%m%d)
           ZIP_NAME="ech-wk-ksu-v${MODULE_VERSION}-${BUILD_DATE}-${{ matrix.suffix }}.zip"
           cd $GITHUB_WORKSPACE/module_${{ matrix.suffix }}
-          # 复制模块配置文件（根据你的仓库结构调整）
           cp -r $GITHUB_WORKSPACE/module/* . 2>/dev/null || true
           zip -r ../$ZIP_NAME ./* -x "*.git*" "*.md" "*.yml"
-          # 上传产物供Release阶段使用
           echo "ZIP_NAME=$ZIP_NAME" >> $GITHUB_ENV
           echo "ZIP_PATH=$GITHUB_WORKSPACE/$ZIP_NAME" >> $GITHUB_ENV
 
@@ -79,12 +91,12 @@ jobs:
           name: ksu-module-${{ matrix.suffix }}
           path: ${{ env.ZIP_PATH }}
 
-  # 第二步：统一创建Release（仅执行1次，上传所有架构包）
   release:
-    needs: build  # 依赖编译完成
+    needs: build
+    if: always()  # 即使编译部分失败，仍创建Release
     runs-on: ubuntu-latest
     permissions:
-      contents: write  # 显式授予Release权限
+      contents: write
     steps:
       - name: Download all artifacts
         uses: actions/download-artifact@v4
@@ -100,10 +112,10 @@ jobs:
             ## 版本说明
             ${{ github.event.inputs.release_note }}
             ## 构建信息
-            - 架构：arm64 + amd64
+            - 成功架构：${{ contains(join(matrix.arch), 'arm64') && 'arm64' || '' }} ${{ contains(join(matrix.arch), 'amd64') && 'amd64' || '' }}
             - 构建时间：${{ github.run_at }}
             - 构建编号：${{ github.run_id }}
-          # 上传所有架构的包
+          # 上传所有成功的包（自动忽略失败的）
           files: |
             $GITHUB_WORKSPACE/artifacts/ksu-module-arm64/*.zip
             $GITHUB_WORKSPACE/artifacts/ksu-module-amd64/*.zip
