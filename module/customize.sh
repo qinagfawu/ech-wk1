@@ -8,6 +8,8 @@ LOG_FILE="$RUN_DIR/install.log"
 
 # 日志函数
 log() {
+    echo "[$(date函数
+log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" >> "$LOG_FILE"
     ui_print "$1"
 }
@@ -24,7 +26,7 @@ ARCH=$(uname -m)
 log "检测到设备架构: $ARCH"
 case "$ARCH" in
     aarch64|arm64)
-        BIN_NAME="ech-wk-arm64"
+        BIN_NAME="ech-wk-arm64"  # 架构对应的二进制文件名
         ;;
     x86_64|amd64)
         BIN_NAME="ech-wk-x86_64"
@@ -35,10 +37,12 @@ case "$ARCH" in
         ;;
 esac
 
-# 复制核心文件
+# 核心修复：复制带架构后缀的二进制文件（而非固定的 ech-wk）
 log "复制二进制文件: $BIN_NAME"
-cp -f "$MODDIR/bin/ech-wk" "$RUN_DIR/ech-wk" || {
+# 修复路径：$MODDIR/bin/$BIN_NAME（匹配编译输出的文件名）
+cp -f "$MODDIR/bin/$BIN_NAME" "$RUN_DIR/ech-wk" || {
     log "复制二进制失败"
+    log "检查：$MODDIR/bin/$BIN_NAME 是否存在？"
     abort "二进制文件缺失"
 }
 
