@@ -16,7 +16,7 @@ jobs:
   build-and-release:
     runs-on: ubuntu-latest
     permissions:
-      contents: write  # 显式权限
+      contents: write
 
     steps:
       - name: Checkout repo
@@ -36,19 +36,25 @@ jobs:
         run: |
           git clone https://github.com/byJoey/ech-wk.git /tmp/ech-wk
           cd /tmp/ech-wk
+          cd /tmp/ech-wk
           go mod init ech-workers
           go mod tidy
           go mod download
 
-      - name: Build ech-wk for Android arm64
+      - name: Build ech-wk for Android arm64 (修复文件名)
         run: |
           cd /tmp/ech-wk
           export GOOS=android
           export GOARCH=arm64
           export CGO_ENABLED=0
           mkdir -p $GITHUB_WORKSPACE/module/bin
-          go build -ldflags="-s -w" -o $GITHUB_WORKSPACE/module/bin/ech-wk ./ech-workers.go
-          file $GITHUB_WORKSPACE/module/bin/ech-wk
+          # 输出带-arm64后缀的二进制，匹配安装脚本
+          go build -ldflags="-s -w" -o $GITHUB_WORKSPACE/module/bin/ech-wk-arm64 ./ech-workers.go
+          # 验证文件存在并打印信息
+          ls -l $GITHUB_WORKSPACE/module/bin/
+          file $GITHUB_WORKSPACE/module/bin/ech-wk-arm64
+          # 给二进制加执行权限
+          chmod +x $GITHUB_WORKSPACE/module/bin/ech-wk-arm64
 
       - name: Package KSU module
         run: |
@@ -57,6 +63,8 @@ jobs:
           BUILD_DATE=$(date +%Y%m%d)
           ZIP_NAME="ech-wk-ksu-v${MODULE_VERSION}-${BUILD_DATE}-arm64.zip"
           zip -r ../$ZIP_NAME ./* -x "*.git*" "*.md" "*.yml"
+          # 验证ZIP包内的二进制路径
+          unzip -l ../$ZIP_NAME | grep "ech-wk-arm64"
           echo "ZIP_NAME=$ZIP_NAME" >> $GITHUB_ENV
 
       - name: Create GitHub Release
@@ -69,6 +77,7 @@ jobs:
             ${{ github.event.inputs.release_note }}
             ## 构建信息
             - 架构：arm64
+            - 二进制文件名：ech-wk-arm64
             - 构建时间：${{ github.run_at }}
           files: ${{ github.workspace }}/${{ env.ZIP_NAME }}
           draft: false
