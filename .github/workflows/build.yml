@@ -28,9 +28,9 @@ jobs:
           go-version: '1.22'
           cache: true
 
-      - name: Install cross-compile dependencies
+      - name: Install arm64 compile dependencies (仅装arm64依赖)
         run: |
-          sudo apt update && sudo apt install -y gcc-aarch64-linux-gnu gcc-x86-64-linux-gnu
+          sudo apt update && sudo apt install -y gcc-aarch64-linux-gnu
 
       - name: Clone ech-wk source
         run: |
@@ -39,7 +39,7 @@ jobs:
           go mod init ech-workers
           go mod tidy
 
-      # 编译arm64版本（输出 ech-wk-arm64）
+      # 仅保留arm64编译（删除x86_64步骤）
       - name: Build ech-wk arm64
         run: |
           cd /tmp/ech-wk
@@ -51,17 +51,6 @@ jobs:
           go build -ldflags="-s -w" -o $GITHUB_WORKSPACE/module/bin/ech-wk-arm64 ./ech-workers.go
           chmod +x $GITHUB_WORKSPACE/module/bin/ech-wk-arm64
           ls -l $GITHUB_WORKSPACE/module/bin/  # 验证文件存在
-
-      # 可选：编译x86_64版本（输出 ech-wk-x86_64）
-      - name: Build ech-wk x86_64
-        run: |
-          cd /tmp/ech-wk
-          export GOOS=android
-          export GOARCH=amd64
-          export CGO_ENABLED=0
-          mkdir -p $GITHUB_WORKSPACE/module/bin
-          go build -ldflags="-s -w" -o $GITHUB_WORKSPACE/module/bin/ech-wk-x86_64 ./ech-workers.go
-          chmod +x $GITHUB_WORKSPACE/module/bin/ech-wk-x86_64
 
       - name: Package KSU module
         run: |
@@ -81,8 +70,8 @@ jobs:
             ## 版本说明
             ${{ github.event.inputs.release_note }}
             ## 构建信息
-            - 支持架构：arm64（x86_64 可选）
-            - 二进制文件名：ech-wk-arm64/ech-wk-x86_64
+            - 支持架构：arm64（仅安卓arm64）
+            - 二进制文件名：ech-wk-arm64
           files: ${{ github.workspace }}/${{ env.ZIP_NAME }}
           draft: false
           prerelease: false
