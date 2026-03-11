@@ -5,7 +5,8 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/byJoey/ech-wk-ksu/core" // 替换为你的实际模块路径
+	// 👇 替换为你真实的仓库路径（无中文！）
+	"github.com/qinagfawu/ech-wk/core"
 )
 
 func main() {
